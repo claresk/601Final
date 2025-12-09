@@ -12,7 +12,7 @@ library(dplyr)
 library(purrr)
 library(tidyverse)
 library(tidycensus)
-census_api_key("bac3b032ad450b4bff85d11aac4bb89359a1759b")
+census_api_key("YOUR KEY HERE")
 library(ggplot2)
 ```
 
@@ -387,3 +387,4 @@ plot(uepc2023$"%.Mem"*100, uepc2023$unemp_change*100)
 ```
 
 There is a statistically significant correlation of 0.20 between baseline (2020) union membership and change in unemployment during the post-COVID economic recovery.
+
