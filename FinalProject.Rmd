@@ -1,0 +1,389 @@
+---
+title: "601final"
+author: "Clare Staib-Kaufman"
+date: "12/10/25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(openxlsx)
+library(dplyr)
+library(purrr)
+library(tidyverse)
+library(tidycensus)
+census_api_key("bac3b032ad450b4bff85d11aac4bb89359a1759b")
+library(ggplot2)
+```
+
+
+# 1. Pulling & cleaning data
+
+## Census API
+```{r}
+# function to pull economic indicator data from the US Census API
+get_cens <- function(y) {
+  cens <- c()
+  for (g in c("cbsa", "combined statistical area")){
+    g <- get_acs(
+      geography = g,
+      variables = c(
+        GiniIndex = "B19083_001E",
+        Population = "B01003_001E",
+        MedianHomeValue = "B25109_001E",
+        MedianIncome = "B06011_001E",
+        Unemployed = "C18120_006E",
+        Workers = "B08126_001E",
+        PublicWorkers = "B08126_014E",
+        ConstructionWorkers = "B08126_003E",
+        ManufacturingWorkers = "B08126_004E",
+        Total_OR = "B07013_001E",
+        HealthIns = "B992701_002E",
+        Total_PL = "B08122_001E",
+        Above150pPL = "B08122_004E"
+        ), 
+      year = y,
+      output = "wide")
+    
+    # calculations for percentage metrics
+    g$UnemployedPct = g$Unemployed / g$Population
+    g$HighlyUnzIndsPct <- (g$PublicWorkers+g$ConstructionWorkers+g$ManufacturingWorkers) / g$Workers
+    g$pctHealthIns <- g$HealthIns / g$Population
+    g$Below150pPl = 1 - (g$Above150pPL / g$Total_PL)
+    
+    # combining datasets
+    cens <- rbind(cens, g)
+  }
+  
+  # cleaning data
+  cens <- cens %>% 
+    mutate(across(everything(), ~ str_replace(
+      string = .x, 
+      pattern = " CSA| Micro Area| Metro Area",
+      replacement = ""))) %>%
+    mutate_at(c(
+      "GEOID",
+      "GiniIndex",
+      "Population",
+      "MedianHomeValue",
+      "MedianIncome",
+      "UnemployedPct",
+      "HighlyUnzIndsPct",
+      "pctHealthIns",
+      "Below150pPl"
+      ), as.numeric) %>%
+    select(
+      "GEOID", 
+      "NAME", 
+      "GiniIndex", 
+      "Population",
+      "MedianHomeValue",
+      "MedianIncome",
+      "UnemployedPct",
+      "HighlyUnzIndsPct",
+      "pctHealthIns", 
+      "Below150pPl"
+      )
+  return(cens)
+}
+```
+
+
+## Union membership & combining with census data
+
+```{r}
+# function to pull union membership data from the union stats database
+alldata <- map(2013:2023, function(y) {
+  url <- paste0("https://unionstats.com/msa/xls/msa_", as.character(y), ".xlsx")
+  un <- read.xlsx(url, startRow=3)
+  un <- head(un, -1)
+  un <- un %>%
+    select("FIPS.code", 
+           "Metropolitan.Area", 
+           "%.Mem", 
+           "%.Cov") %>%
+    rename("GEOID"="FIPS.code", 
+           "NAME"="Metropolitan.Area") %>%
+    na.omit() %>%
+    mutate_at(c("%.Mem","%.Cov"), as.numeric)
+  
+  # adding a column for data year
+  un$YEAR = y
+  
+  # using the census function to get the economic indicator data
+  cens <- get_cens(y)
+  
+  # merging together the two datasets and cleaning for any discrepancies in metro area definitions
+  all <- merge(un, cens, by="GEOID", all.x = TRUE)
+  all <- all[all$NAME.x==all$NAME.y,]
+  all <- all %>% rename("NAME"="NAME.x") 
+  all <- na.omit(all)
+  all <- all[c(
+    "YEAR",
+    "NAME",
+    "%.Mem",
+    "%.Cov",
+    "GiniIndex", 
+    "MedianIncome", 
+    "UnemployedPct",
+    "Population",
+    "HighlyUnzIndsPct",
+    "pctHealthIns",
+    "Below150pPl"
+    )]
+  return(all)
+  })
+
+# combining data for all years into one dataframe
+alldata_b <- bind_rows(alldata)
+
+```
+
+
+# 2. Corrrelations
+
+## Main economic indicators & results
+```{r}
+# testing union membership vs union coverage
+cor.test(alldata_b$"%.Mem", alldata_b$"%.Cov")
+plot(alldata_b$"%.Mem", alldata_b$"%.Cov")
+```
+
+For each metropolitan area, the union membership dataset presented both membership rate and coverage rate. (In many cases, workers who are not legally members of the union still benefit from the collective bargaining agreement, leading to discrepancies between membership and coverage.) For simplicity, I chose to use membership rate, as the two were nearly perfectly correlated (0.99).
+
+```{r}
+# testing union membership vs median income
+cor.test(alldata_b$"%.Mem", alldata_b$MedianIncome)
+ggplot(figures, aes(x = Mem, y = MedianIncome)) +
+  geom_point(shape=19, alpha=0.5) +
+  geom_smooth(method = "lm", color="violet") +
+  labs(title = "Union Membership & Income") + 
+  xlab("% Union Membership") +
+  ylab("Median Income") +
+  scale_x_continuous(labels = scales::percent)+
+  theme(aspect.ratio = 1)
+
+# testing union membership vs Gini index (income inequality)
+cor.test(alldata_b$"%.Mem", alldata_b$GiniIndex)
+ggplot(figures, aes(x = Mem, y = GiniIndex)) +
+  geom_point(shape=19, alpha=0.5) +
+  geom_smooth(method = "lm", color="cornflowerblue") +
+  labs(title = "Union Membership & Inequality") + 
+  xlab("% Union Membership") +
+  ylab("Gini Index") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme(aspect.ratio = 1)
+
+# testing union membership vs share of population below 150% of the poverty line
+cor.test(alldata_b$"%.Mem", alldata_b$Below150pPl)
+ggplot(figures, aes(x = Mem, y = Below150pPl)) +
+  geom_point(shape=19, alpha=0.5) +
+  geom_smooth(method = "lm", color="orange") +
+  labs(title = "Union Membership & Poverty") + 
+  xlab("% Union Membership") +
+  ylab("Share below 150% of the poverty line") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme(aspect.ratio = 1)
+```
+
+Higher unionization rates are associated with
+* increased median income with a correlation value of 0.16. 
+* decreased Gini inequality index with a correlation value of -0.17
+* decreased share of people living below 150% of the poverty line with a correlation value of -0.24
+
+All three correlations are statistically robust with negligible p-values. 
+
+
+## Additional economic indicators
+
+```{r}
+# testing union membership vs health insurance coverage
+cor.test(alldata_b$"%.Mem", alldata_b$pctHealthIns)
+plot(alldata_b$"%.Mem", alldata_b$pctHealthIns)
+```
+
+There is no correlation between union membership rate and the percentage of a population with health insurance coverage.
+
+```{r}
+# testing union membership vs unemployment
+cor.test(alldata_b$"%.Mem", alldata_b$UnemployedPct)
+plot(alldata_b$"%.Mem", alldata_b$UnemployedPct)
+```
+
+Union membership is positively associated with unemployment at a value of 0.21. In order to further investigate this trend, I looked at a few more correlations.
+
+```{r}
+# testing unemployment vs percentage of workers in highly unionized industries
+cor.test(alldata_b$UnemployedPct, alldata_b$HighlyUnzIndsPct)
+plot(alldata_b$UnemployedPct, alldata_b$HighlyUnzIndsPct)
+
+# testing union membership vs percentage of workers in highly unionized industries
+cor.test(alldata_b$"%.Mem", alldata_b$HighlyUnzIndsPct)
+plot(alldata_b$"%.Mem", alldata_b$HighlyUnzIndsPct)
+
+# testing union membership vs population size
+cor.test(alldata_b$"%.Mem", alldata_b$Population)
+plot(alldata_b$"%.Mem", alldata_b$Population)
+
+# testing population size vs unemployment
+cor.test(alldata_b$Population, alldata_b$UnemployedPct)
+plot(alldata_b$Population, alldata_b$UnemployedPct)
+```
+
+There is a very small correlation between population size and unemployment rate. Strangely, there is no relationship between union membership and percentage of the workforce in highly unionized industries (manufacturing, construction, and public administration). There are also no significant correlations between union membership, population size, and unemployment.
+
+
+# 3. Two-sample t-tests for membership extremes
+
+## Isolating relevant data
+```{r}
+# creating a new dataset with only the most unionized (20% or more) or least unionized (5% or less) cities
+alldata_b$MemExtremes <- case_when(
+  alldata_b$"%.Mem">=0.20 ~ "Over 20%",
+  alldata_b$"%.Mem"<=0.05 ~ "Under 5%")
+alldata_b_EXTR <- na.omit(alldata_b)
+```
+
+
+## Verifying the appropriateness of a two-sample t-test
+
+```{r}
+#checking if normally distributed by qqnorm
+qqnorm(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Over 20%","MedianIncome"])
+qqnorm(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Under 5%","MedianIncome"])
+qqnorm(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Over 20%","GiniIndex"])
+qqnorm(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Under 5%","GiniIndex"])
+qqnorm(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Over 20%","Below150pPl"])
+qqnorm(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Under 5%","Below150pPl"])
+
+#checking for similar variances
+var(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Over 20%","MedianIncome"])
+var(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Under 5%","MedianIncome"])
+var(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Over 20%","GiniIndex"])
+var(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Under 5%","GiniIndex"])
+var(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Over 20%","Below150pPl"])
+var(alldata_b_EXTR[alldata_b_EXTR$MemExtremes=="Under 5%","Below150pPl"])
+```
+
+All variables are normally distributed with similar variances such that a two-sample t-test is valid.
+
+
+## Conducting two-sample t-tests between high and low union membership groups
+
+```{r}
+# two-sample t-test for median income
+t.test(
+  alldata_b_EXTR$MedianIncome[alldata_b_EXTR$MemExtremes=="Over 20%"], 
+  alldata_b_EXTR$MedianIncome[alldata_b_EXTR$MemExtremes=="Under 5%"],
+  alternative = "two.sided",
+  mu = 0, 
+  paired = FALSE, 
+  var.equal = FALSE,
+  conf.level = 0.95)
+
+# two-sample t-test for Gini index
+t.test(
+  alldata_b_EXTR$GiniIndex[alldata_b_EXTR$MemExtremes=="Over 20%"], 
+  alldata_b_EXTR$GiniIndex[alldata_b_EXTR$MemExtremes=="Under 5%"],
+  alternative = "two.sided",
+  mu = 0, 
+  paired = FALSE, 
+  var.equal = FALSE,
+  conf.level = 0.95)
+
+#two-sample t-test for share of the population living below 150% of the poverty line
+t.test(
+  alldata_b_EXTR$Below150pPl[alldata_b_EXTR$MemExtremes=="Over 20%"], 
+  alldata_b_EXTR$Below150pPl[alldata_b_EXTR$MemExtremes=="Under 5%"],
+  alternative = "two.sided",
+  mu = 0, 
+  paired = FALSE, 
+  var.equal = FALSE,
+  conf.level = 0.95)
+```
+
+Compared to the least unionized cities, the most unionized cities had an estimated 
+* $2,160±787 higher median income
+* 1.4±0.31% lower Gini inequality index value (on a scale from 0 to 100%)
+* 3.3±0.56% smaller share of the population living below 150% of the poverty line
+
+
+## Boxplots showing the differences between groups
+
+```{r}
+# creating a separate dataframe for the boxplots
+figures <- alldata_b[c("%.Mem", "GiniIndex", "MedianIncome", "Below150pPl")] %>%
+  rename("Mem"="%.Mem")
+figures$GiniIndex = figures$GiniIndex
+
+# boxplot of Gini index between the two membership groups
+ggplot(figures, aes(x = Mem, y = GiniIndex)) +
+  geom_point(shape=19, alpha=0.5) +
+  geom_smooth(method = "lm", color="cornflowerblue") +
+  labs(title = "Union Membership & Inequality") + 
+  xlab("% Union Membership") +
+  ylab("Gini Index") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme(aspect.ratio = 1)
+
+# boxplot of median income between the two membership groups
+ggplot(figures, aes(x = Mem, y = MedianIncome)) +
+  geom_point(shape=19, alpha=0.5) +
+  geom_smooth(method = "lm", color="violet") +
+  labs(title = "Union Membership & Income") + 
+  xlab("% Union Membership") +
+  ylab("Median Income") +
+  scale_x_continuous(labels = scales::percent)+
+  theme(aspect.ratio = 1)
+
+# boxplot of share of population below 150% of the poverty line between the two membership groups
+ggplot(figures, aes(x = Mem, y = Below150pPl)) +
+  geom_point(shape=19, alpha=0.5) +
+  geom_smooth(method = "lm", color="orange") +
+  labs(title = "Union Membership & Poverty") + 
+  xlab("% Union Membership") +
+  ylab("Share below 150% of the poverty line") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme(aspect.ratio = 1)
+```
+
+
+# 4. Further investigation of the COVID and post-COVID periods
+
+## Changes in unemployment
+
+```{r}
+# calculating change in unemployment between 2019 and 2020 (COVID-era economic downturn)
+uepc1920 <- merge(
+  alldata[[7]][c("NAME", "UnemployedPct")], 
+  alldata[[8]][c("NAME", "UnemployedPct")], by="NAME", all.x = TRUE, suffixes=c("2019", "2020"))
+uepc1920$unemp_change <- uepc1920$UnemployedPct2020 - uepc1920$UnemployedPct2019
+uepc1920 <- merge(uepc1920[c("NAME", "unemp_change")], alldata[[7]][c("NAME", "%.Mem")], by="NAME")
+
+# testing the correlation between union membership and chane in unemployment from 2019-2020
+cor.test(uepc1920$"%.Mem", uepc1920$unemp_change)
+plot(uepc1920$"%.Mem", uepc1920$unemp_change)
+```
+
+There is no significant relationship between baseline (2019) union membership and change in unemployment during the COVID-era economic downturn.
+
+
+```{r}
+# change in unemployment between 2020 and 2023 (post-COVID economic recovery)
+uepc2023 <- merge(
+  alldata[[8]][c("NAME", "UnemployedPct")], 
+  alldata[[11]][c("NAME", "UnemployedPct")], by="NAME", all.x = TRUE, suffixes=c("2020", "2023"))
+uepc2023$unemp_change <- uepc2023$UnemployedPct2023 - uepc2023$UnemployedPct2020
+uepc2023 <- merge(uepc2023[c("NAME", "unemp_change")], alldata[[8]][c("NAME", "%.Mem")], by="NAME")
+
+# testing the correlation between union membership and chane in unemployment from 2020-2023
+cor.test(uepc2023$"%.Mem"*100, uepc2023$unemp_change*100)
+plot(uepc2023$"%.Mem"*100, uepc2023$unemp_change*100)
+
+```
+
+There is a statistically significant correlation of 0.20 between baseline (2020) union membership and change in unemployment during the post-COVID economic recovery.
