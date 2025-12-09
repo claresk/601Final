@@ -3,8 +3,11 @@ Author: Clare Staib-Kaufman
 
 INFO-601 Final Project
 
+<br>
 
 *FinalProject.Rmd* contains the code for the analysis and figures.
+
+<br>
 
 ### Data Sources:
 [Union Membership and Coverage Database](https://unionstats.com/)
@@ -12,6 +15,8 @@ INFO-601 Final Project
 [National Bureau of Economic Research’s Current Population Survey](https://www.nber.org/research/data/current-population-survey-cps-data-nber)
 
 [US Census Bureau](https://www.census.gov/)
+
+<br>
 
 ### References:
 Bivens, Josh et al. “How today’s unions help working people.” *Economic Policy Institute*, 2017. [Link](https://files.epi.org/pdf/133275.pdf)
