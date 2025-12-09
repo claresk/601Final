@@ -1,6 +1,8 @@
 ## Union Membership and Economic Prosperity
 Author: Clare Staib-Kaufman
+
 INFO-601 Final Project
+
 
 *FinalProject.Rmd* contains the code for the analysis and figures.
 
